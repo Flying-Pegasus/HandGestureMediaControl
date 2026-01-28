@@ -53,6 +53,7 @@ detector = vision.HandLandmarker.create_from_options(options)
 # State variables
 mouse_active = False
 prev_x, prev_y = 0, 0           # Previous cursor position for smoothing
+stored_click_x, stored_click_y = screenW // 2, screenH // 2  # Stored position for clicking
 last_click_time = 0             # For click cooldown
 click_ready = True              # Prevents continuous clicking
 
@@ -93,10 +94,9 @@ print("=" * 50)
 print("HAND MOUSE CONTROL")
 print("=" * 50)
 print("GESTURES:")
-print("  • Pinch Index + Thumb  → Activate mouse mode")
-print("  • Move hand            → Move cursor")
-print("  • Add Middle finger    → Click")
-print("  • Release pinch        → Deactivate mouse")
+print("  • Pinch Index + Thumb  → Move cursor (hold to drag)")
+print("  • Release pinch        → Stop cursor movement")
+print("  • Tap Middle + Thumb   → Click at current position")
 print("  • Press ESC            → Exit program")
 print("=" * 50)
 
@@ -158,21 +158,21 @@ while True:
                 x8, y8 = get_landmark_pos(lmList, 8)    # Index finger tip
                 x12, y12 = get_landmark_pos(lmList, 12) # Middle finger tip
                 x0, y0 = get_landmark_pos(lmList, 0)    # Wrist
-                x9, y9 = get_landmark_pos(lmList, 9)    # Middle finger base
+                x9, y9 = get_landmark_pos(lmList, 9)    # Middle finger MCP (base)
                 
                 # Calculate palm length for relative measurements
                 palm_length = calculate_distance(x0, y0, x9, y9)
                 
                 # Calculate distances for gestures
-                pinch_distance = calculate_distance(x4, y4, x8, y8)  # Index-Thumb
-                click_distance = calculate_distance(x12, y12, x8, y8)  # Middle-Index
+                pinch_index_thumb = calculate_distance(x4, y4, x8, y8)  # Index-Thumb distance
+                pinch_middle_thumb = calculate_distance(x4, y4, x12, y12)  # Middle-Thumb distance
                 
                 # Dynamic threshold based on hand size
                 pinch_thresh = min(PINCH_THRESHOLD, palm_length * 0.3)
                 click_thresh = min(CLICK_THRESHOLD, palm_length * 0.35)
                 
-                # ============ MOUSE ACTIVATION (Index + Thumb pinch) ============
-                if pinch_distance < pinch_thresh:
+                # ============ CURSOR MOVEMENT (Index + Thumb pinch) ============
+                if pinch_index_thumb < pinch_thresh:
                     mouse_active = True
                     
                     # Use index finger position for cursor control
@@ -188,34 +188,38 @@ while True:
                     # Move cursor
                     pyautogui.moveTo(int(smooth_x), int(smooth_y))
                     
-                    # Update previous position
+                    # Update previous position AND store for clicking
                     prev_x, prev_y = smooth_x, smooth_y
+                    stored_click_x, stored_click_y = int(smooth_x), int(smooth_y)
                     
                     # Visual feedback - pinch point
                     cx_pinch = (x4 + x8) // 2
                     cy_pinch = (y4 + y8) // 2
                     cv2.circle(img, (cx_pinch, cy_pinch), 15, (0, 255, 0), cv2.FILLED)
                     cv2.circle(img, (x8, y8), 10, (0, 255, 255), cv2.FILLED)
-                    
-                    # ============ CLICK DETECTION (Middle finger tap) ============
-                    current_time = time.time()
-                    
-                    if click_distance < click_thresh:
-                        if click_ready and (current_time - last_click_time) > CLICK_COOLDOWN:
-                            pyautogui.click()
-                            last_click_time = current_time
-                            click_ready = False
-                            # Visual feedback for click
-                            cv2.circle(img, (cx_pinch, cy_pinch), 25, (0, 0, 255), cv2.FILLED)
-                            print("Click!")
-                    else:
-                        click_ready = True  # Reset click when middle finger is released
                         
                 else:
-                    # Deactivate mouse when pinch is released
+                    # Stop cursor movement when pinch is released
                     if mouse_active:
                         mouse_active = False
-                        print("Mouse deactivated")
+                
+                # ============ CLICK DETECTION (Middle + Thumb tap) ============
+                # Click happens at the STORED position (where cursor was last placed)
+                current_time = time.time()
+                
+                if pinch_middle_thumb < click_thresh:
+                    if click_ready and (current_time - last_click_time) > CLICK_COOLDOWN:
+                        # Click at the stored position, not current mouse position
+                        pyautogui.click(stored_click_x, stored_click_y)
+                        last_click_time = current_time
+                        click_ready = False
+                        # Visual feedback for click
+                        cx_click = (x4 + x12) // 2
+                        cy_click = (y4 + y12) // 2
+                        cv2.circle(img, (cx_click, cy_click), 20, (0, 0, 255), cv2.FILLED)
+                        print(f"Click at ({stored_click_x}, {stored_click_y})!")
+                else:
+                    click_ready = True  # Reset click when middle finger releases thumb
                 
                 # Draw landmarks on thumb and fingers
                 cv2.circle(img, (x4, y4), 8, (255, 0, 0), cv2.FILLED)   # Thumb - Blue
@@ -229,8 +233,8 @@ while True:
             draw_hand_landmarks(img, hand_landmarks, w, h)
     
     # Display status
-    status_color = (0, 255, 0) if mouse_active else (0, 0, 255)
-    status_text = "MOUSE: ACTIVE" if mouse_active else "MOUSE: INACTIVE"
+    status_color = (0, 255, 0) if mouse_active else (128, 128, 128)
+    status_text = "MOVING CURSOR" if mouse_active else "CURSOR STOPPED"
     cv2.putText(img, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
     
     # Display FPS
@@ -240,8 +244,8 @@ while True:
     cv2.putText(img, f"FPS: {int(fps)}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     
     # Instructions on screen
-    cv2.putText(img, "Pinch to activate | Middle tap to click | ESC to exit", 
-                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    cv2.putText(img, "Index+Thumb: Move | Middle+Thumb: Click | ESC: Exit", 
+                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
     
     cv2.imshow("Hand Mouse Control", img)
     
